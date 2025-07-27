@@ -117,6 +117,20 @@ export default class RolloverSettingTab extends PluginSettingTab {
       );
 
     new Setting(this.containerEl)
+      .setName("Rollover all content except completed todos")
+      .setDesc(
+        `When enabled, copies all content from the previous daily note except for completed todos. When disabled, only copies incomplete todos.`
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.rolloverAllContent || false)
+          .onChange((value) => {
+            this.plugin.settings.rolloverAllContent = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(this.containerEl)
       .setName("Done status markers")
       .setDesc(
         `Characters that represent done status in checkboxes. Default is "xX-". Add any characters that should be considered as marking a task complete.`

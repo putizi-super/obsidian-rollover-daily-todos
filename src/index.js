@@ -46,6 +46,7 @@ export default class RolloverTodosPlugin extends Plugin {
       removeEmptyTodos: false,
       rolloverChildren: false,
       rolloverOnFileCreate: true,
+      rolloverAllContent: false,
       doneStatusMarkers: "xX-",
     };
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -131,6 +132,57 @@ export default class RolloverTodosPlugin extends Plugin {
     });
   }
 
+  // Get all content except completed todos
+  async getContentWithoutCompletedTodos(file) {
+    const content = await this.app.vault.read(file);
+    const lines = content.split(/\r?\n|\r|\n/g);
+    
+    // Create a TodoParser to check which lines are completed todos
+    const todoParser = new (class {
+      constructor(lines, withChildren, doneStatusMarkers) {
+        this.lines = lines;
+        this.withChildren = withChildren;
+        this.doneStatusMarkers = doneStatusMarkers ? Array.from(doneStatusMarkers) : ["x", "X", "-"];
+      }
+      
+      // Check if a line is a completed todo
+      isCompletedTodo(line) {
+        const match = line.match(/\s*[*+-] \[(.+?)\]/);
+        if (!match) return false;
+        
+        const content = match[1];
+        if (content.length !== 1) return false;
+        
+        return this.doneStatusMarkers.includes(content);
+      }
+      
+      // Get indices of completed todos and their children (if rolloverChildren is enabled)
+      getCompletedTodoIndices() {
+        const indices = [];
+        for (let i = 0; i < this.lines.length; i++) {
+          if (this.isCompletedTodo(this.lines[i])) {
+            indices.push(i);
+            // If rolloverChildren is enabled, also add child lines
+            if (this.withChildren) {
+              let j = i + 1;
+              const currentIndent = this.lines[i].search(/\S/);
+              while (j < this.lines.length && this.lines[j].search(/\S/) > currentIndent) {
+                indices.push(j);
+                j++;
+              }
+            }
+          }
+        }
+        return indices;
+      }
+    })(lines, this.settings.rolloverChildren, this.settings.doneStatusMarkers);
+    
+    const completedIndices = todoParser.getCompletedTodoIndices();
+    const filteredLines = lines.filter((line, index) => !completedIndices.includes(index));
+    
+    return filteredLines.join("\n");
+  }
+
   async sortHeadersIntoHierarchy(file) {
     ///console.log('testing')
     const templateContents = await this.app.vault.read(file);
@@ -183,12 +235,17 @@ export default class RolloverTodosPlugin extends Plugin {
     }${todayFormatted}.${file.extension}`;
     if (filePathConstructed !== file.path) return;
 
-    // was just created
+    // was just created or ignore creation time (for manual rollover)
     if (
       today.getTime() - file.stat.ctime > MAX_TIME_SINCE_CREATION &&
       !ignoreCreationTime
-    )
-      return;
+    ) {
+      // Check if file is empty (newly created) - this fixes the bug where deleted and recreated files were blank
+      const fileContent = await this.app.vault.read(file);
+      if (fileContent.trim() !== "") {
+        return;
+      }
+    }
 
     /*** Next, if it is a valid daily note, but we don't have daily notes enabled, we must alert the user ***/
     if (!this.isDailyNotesEnabled()) {
@@ -197,7 +254,7 @@ export default class RolloverTodosPlugin extends Plugin {
         10000
       );
     } else {
-      const { templateHeading, deleteOnComplete, removeEmptyTodos } =
+      const { templateHeading, deleteOnComplete, removeEmptyTodos, rolloverAllContent } =
         this.settings;
 
       // check if there is a daily note from yesterday
@@ -207,15 +264,45 @@ export default class RolloverTodosPlugin extends Plugin {
       // TODO: Rollover to subheadings (optional)
       //this.sortHeadersIntoHierarchy(lastDailyNote)
 
-      // get unfinished todos from yesterday, if exist
-      let todos_yesterday = await this.getAllUnfinishedTodos(lastDailyNote);
+      let contentToRollover = "";
+      let todosAdded = 0;
+      let emptiesToNotAddToTomorrow = 0;
+      let todos_yesterday = [];
+      
+      // If rolloverAllContent is enabled, copy all content except completed todos
+      if (rolloverAllContent) {
+        contentToRollover = await this.getContentWithoutCompletedTodos(lastDailyNote);
+        // Count non-empty lines as "todos added" for notification purposes
+        todosAdded = contentToRollover.split(/\r?\n/).filter(line => line.trim() !== "").length;
+      } else {
+        // Original behavior - only copy unfinished todos
+        todos_yesterday = await this.getAllUnfinishedTodos(lastDailyNote);
 
-      console.log(
-        `rollover-daily-todos: ${todos_yesterday.length} todos found in ${lastDailyNote.basename}.md`
-      );
+        console.log(
+          `rollover-daily-todos: ${todos_yesterday.length} todos found in ${lastDailyNote.basename}.md`
+        );
 
-      if (todos_yesterday.length == 0) {
-        return;
+        if (todos_yesterday.length == 0) {
+          return;
+        }
+
+        // Potentially filter todos from yesterday for today
+        let todos_today = !removeEmptyTodos ? todos_yesterday : [];
+        if (removeEmptyTodos) {
+          todos_yesterday.forEach((line, i) => {
+            const trimmedLine = (line || "").trim();
+            if (trimmedLine != "- [ ]" && trimmedLine != "- [  ]") {
+              todos_today.push(line);
+              todosAdded++;
+            } else {
+              emptiesToNotAddToTomorrow++;
+            }
+          });
+        } else {
+          todosAdded = todos_yesterday.length;
+        }
+        
+        contentToRollover = todos_today.join("\n");
       }
 
       // setup undo history
@@ -230,55 +317,31 @@ export default class RolloverTodosPlugin extends Plugin {
         },
       };
 
-      // Potentially filter todos from yesterday for today
-      let todosAdded = 0;
-      let emptiesToNotAddToTomorrow = 0;
-      let todos_today = !removeEmptyTodos ? todos_yesterday : [];
-      if (removeEmptyTodos) {
-        todos_yesterday.forEach((line, i) => {
-          const trimmedLine = (line || "").trim();
-          if (trimmedLine != "- [ ]" && trimmedLine != "- [  ]") {
-            todos_today.push(line);
-            todosAdded++;
-          } else {
-            emptiesToNotAddToTomorrow++;
-          }
-        });
-      } else {
-        todosAdded = todos_yesterday.length;
-      }
-
       // get today's content and modify it
       let templateHeadingNotFoundMessage = "";
       const templateHeadingSelected = templateHeading !== "none";
 
-      if (todos_today.length > 0) {
+      if (contentToRollover.length > 0) {
         let dailyNoteContent = await this.app.vault.read(file);
         undoHistoryInstance.today = {
           file: file,
           oldContent: `${dailyNoteContent}`,
         };
-        const todos_todayString = `\n${todos_today.join("\n")}`;
-
+        
         // If template heading is selected, try to rollover to template heading
         if (templateHeadingSelected) {
           const contentAddedToHeading = dailyNoteContent.replace(
             templateHeading,
-            `${templateHeading}${todos_todayString}`
+            `${templateHeading}\n${contentToRollover}`
           );
           if (contentAddedToHeading == dailyNoteContent) {
             templateHeadingNotFoundMessage = `Rollover couldn't find '${templateHeading}' in today's daily not. Rolling todos to end of file.`;
           } else {
             dailyNoteContent = contentAddedToHeading;
           }
-        }
-
-        // Rollover to bottom of file if no heading found in file, or no heading selected
-        if (
-          !templateHeadingSelected ||
-          templateHeadingNotFoundMessage.length > 0
-        ) {
-          dailyNoteContent += todos_todayString;
+        } else {
+          // Rollover to bottom of file if no heading selected
+          dailyNoteContent += `\n${contentToRollover}`;
         }
 
         await this.app.vault.modify(file, dailyNoteContent);
@@ -293,9 +356,20 @@ export default class RolloverTodosPlugin extends Plugin {
         };
         let lines = lastDailyNoteContent.split("\n");
 
-        for (let i = lines.length; i >= 0; i--) {
-          if (todos_yesterday.includes(lines[i])) {
-            lines.splice(i, 1);
+        // If rolloverAllContent is enabled, we need to remove completed todos from yesterday
+        if (rolloverAllContent) {
+          const contentWithoutCompleted = await this.getContentWithoutCompletedTodos(lastDailyNote);
+          const linesWithoutCompleted = contentWithoutCompleted.split("\n");
+          // Remove lines that are not in the filtered content
+          lines = lines.filter((line, index) => {
+            return linesWithoutCompleted.includes(line) || line.trim() === "";
+          });
+        } else {
+          // Original behavior - remove unfinished todos
+          for (let i = lines.length; i >= 0; i--) {
+            if (todos_yesterday.includes(lines[i])) {
+              lines.splice(i, 1);
+            }
           }
         }
 
@@ -307,7 +381,7 @@ export default class RolloverTodosPlugin extends Plugin {
       const todosAddedString =
         todosAdded == 0
           ? ""
-          : `- ${todosAdded} todo${todosAdded > 1 ? "s" : ""} rolled over.`;
+          : `- ${todosAdded} item${todosAdded > 1 ? "s" : ""} rolled over.`;
       const emptiesToNotAddToTomorrowString =
         emptiesToNotAddToTomorrow == 0
           ? ""

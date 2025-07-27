@@ -55,7 +55,43 @@ By default, this plugin will roll over anything that has a checkbox, whether it 
 
 By default, only the actual todos are rolled over. If you add nested Markdown elements beneath your todos, these are not rolled over but stay in place. Toggling this setting on allows for also migrating the nested elements, including ones that are completed.
 
-### 6. Done status markers
+### 6. Rollover all content except completed todos
+
+When enabled, copies all content from the previous daily note except for completed todos. When disabled, only copies incomplete todos. This setting works in conjunction with "Roll over children of todos" and "Done status markers".
+
+#### Example Usage
+
+With this setting enabled, if your previous daily note looked like this:
+```markdown
+# Monday's Journal
+
+## Tasks
+- [x] Complete project proposal
+- [ ] Review team feedback
+  - [ ] Schedule meeting
+  - [x] Prepare agenda
+- [ ] Call client
+
+## Notes
+Important meeting with stakeholders today.
+```
+
+The rolled over content would be:
+```markdown
+# Monday's Journal
+
+## Tasks
+- [ ] Review team feedback
+  - [ ] Schedule meeting
+- [ ] Call client
+
+## Notes
+Important meeting with stakeholders today.
+```
+
+Notice how completed tasks (`[x]`) and their children (`[x] Prepare agenda`) are removed, while all other content including headings, text, and incomplete todos are preserved.
+
+### 7. Done status markers
 
 By default, the plugin considers checkboxes containing 'x', 'X', or '-' as completed tasks that won't be rolled over. You can customize this by adding any characters that should be considered "done" markers. For example, adding '?+>' would also treat checkboxes like '[?]', '[+]', and '[>]' as completed tasks. This is useful for users of custom status markers like the [Obsidian Tasks](https://publish.obsidian.md/tasks/Introduction) plugin.
 
@@ -90,6 +126,15 @@ And the previous day might look like
 
 3. There are sometimes conflicts with other plugins that deal with new notes -- particularly the Templater plugin. In these situations, your todos may be removed from your previous note, and then not be saved into your new daily note. The simplest remedy is to disable the automatic rollover, and instead trigger it manually.
 
+4. Fixed an issue where deleting a daily note and then recreating it would result in a blank note instead of rolling over the todos from the previous day.
+
 ## Installation
 
 This plugin can be installed within the `Third-party Plugins` tab within Obsidian
+
+## Changelog
+
+### v1.3.0 (2025-07-27)
+- Added "Rollover all content except completed todos" feature
+- Fixed issue where deleting a daily note and then recreating it would result in a blank note
+- Improved documentation with usage examples
